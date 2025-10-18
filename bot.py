@@ -186,3 +186,54 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+# --- Веб-сервер для health-чеков от Render ---
+async def health_check(request):
+    """
+    Эта функция будет отвечать на HTTP-запросы Render,
+    подтверждая, что сервис жив.
+    """
+    return web.Response(text="I am alive!")
+
+async def start_bot_and_server(bot: Bot, dispatcher: Dispatcher):
+    """
+    Запускает и бота (в режиме поллинга), и веб-сервер.
+    """
+    # Создаем веб-приложение
+    app = web.Application()
+    app.router.add_get('/', health_check) # Регистрируем наш health-чек
+
+    # Render предоставляет порт в переменной окружения PORT
+    # Если ее нет (локальный запуск), используем 8080
+    port = int(os.getenv('PORT', 8080))
+    
+    # Запускаем веб-сервер
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    
+    # Задачи для одновременного выполнения
+    bot_task = asyncio.create_task(dispatcher.start_polling(bot))
+    server_task = asyncio.create_task(site.start())
+
+    logging.info(f"Веб-сервер запущен на порту {port}")
+    
+    # Ждем завершения обеих задач
+    await asyncio.gather(bot_task, server_task)
+
+
+async def main():
+    if not TOKEN:
+        logging.critical("Переменная окружения TOKEN не найдена!")
+        return
+
+    bot = Bot(token=TOKEN)
+    await start_bot_and_server(bot, dp)
+
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Бот остановлен.")
