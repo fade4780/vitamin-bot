@@ -6,6 +6,11 @@ from datetime import datetime
 import os
 import sys
 
+# --- Добавлено для Render ---
+import logging
+from aiohttp import web
+# --- Конец добавлений ---
+
 TOKEN = "8432034617:AAFBROdOxySAe6opmCEGhDLGTXCpymjlFYY"
 ADMIN_ID = 1197348954  # <-- твой Telegram ID
 
@@ -178,16 +183,7 @@ async def send_reminders():
                     users[user_id]["taken_today"][t] = False
         await asyncio.sleep(60)
 
-# ====== Главная функция ======
-async def main():
-    print("Бот запущен...")
-    asyncio.create_task(send_reminders())
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-# --- Веб-сервер для health-чеков от Render ---
+# --- Веб-сервер для health-чеков от Render (ЗАМЕНЯЕТ main()) ---
 async def health_check(request):
     """
     Эта функция будет отвечать на HTTP-запросы Render,
@@ -195,16 +191,15 @@ async def health_check(request):
     """
     return web.Response(text="I am alive!")
 
-async def start_bot_and_server(bot: Bot, dispatcher: Dispatcher):
+async def main():
     """
-    Запускает и бота (в режиме поллинга), и веб-сервер.
+    Запускает и бота (в режиме поллинга), и веб-сервер, и фоновые задачи.
     """
     # Создаем веб-приложение
     app = web.Application()
     app.router.add_get('/', health_check) # Регистрируем наш health-чек
 
     # Render предоставляет порт в переменной окружения PORT
-    # Если ее нет (локальный запуск), используем 8080
     port = int(os.getenv('PORT', 8080))
     
     # Запускаем веб-сервер
@@ -213,22 +208,15 @@ async def start_bot_and_server(bot: Bot, dispatcher: Dispatcher):
     site = web.TCPSite(runner, '0.0.0.0', port)
     
     # Задачи для одновременного выполнения
-    bot_task = asyncio.create_task(dispatcher.start_polling(bot))
+    bot_task = asyncio.create_task(dp.start_polling(bot))
     server_task = asyncio.create_task(site.start())
+    reminders_task = asyncio.create_task(send_reminders()) # <--- Запускаем напоминания
 
-    logging.info(f"Веб-сервер запущен на порту {port}")
-    
-    # Ждем завершения обеих задач
-    await asyncio.gather(bot_task, server_task)
+    logging.info(f"Бот запущен. Веб-сервер запущен на порту {port}")
+    print(f"Бот запущен. Веб-сервер запущен на порту {port}")
 
-
-async def main():
-    if not TOKEN:
-        logging.critical("Переменная окружения TOKEN не найдена!")
-        return
-
-    bot = Bot(token=TOKEN)
-    await start_bot_and_server(bot, dp)
+    # Ждем завершения всех задач
+    await asyncio.gather(bot_task, server_task, reminders_task)
 
 
 if __name__ == '__main__':
@@ -237,3 +225,5 @@ if __name__ == '__main__':
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Бот остановлен.")
+        print("Бот остановлен.")
+
