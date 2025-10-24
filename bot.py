@@ -161,13 +161,22 @@ async def edit_reminder(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "taken")
 async def taken_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-    now_dt = datetime.now()
+    
+    # --- ИСПРАВЛЕНИЕ: Добавляем тот же часовой пояс, что и в send_reminders ---
+    TIMEZONE_OFFSET_HOURS = 3 # <--- Убедитесь, что здесь тот же пояс, что и ниже
+    tz = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
+    now_dt = datetime.now(tz)
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
     
     if user_id in users:
         for t in users[user_id]["times"]:
             # Проверяем, что напоминание не отмечено
             if not users[user_id]["taken_today"].get(t, False):
-                time_dt = datetime.strptime(t, "%H:%M").replace(year=now_dt.year, month=now_dt.month, day=now_dt.day)
+                # Создаем datetime для времени напоминания С УЧЕТОМ ЧАСОВОГО ПОЯСА
+                time_dt = datetime.strptime(t, "%H:%M").replace(
+                    year=now_dt.year, month=now_dt.month, day=now_dt.day, tzinfo=tz
+                )
+                
                 # Даем 5 минут (300 секунд) погрешности на нажатие кнопки
                 if abs((now_dt - time_dt).total_seconds()) < 300: 
                     users[user_id]["taken_today"][t] = True
@@ -251,5 +260,6 @@ if __name__ == '__main__':
     except (KeyboardInterrupt, SystemExit):
         logging.info("Бот остановлен.")
         print("Бот остановлен.")
+
 
 
