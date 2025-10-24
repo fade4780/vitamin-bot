@@ -2,7 +2,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone, timedelta # <--- ИЗМЕНЕНО
 import os
 import sys
 
@@ -46,17 +46,41 @@ async def start_handler(message: types.Message):
         reply_markup=main_keyboard
     )
 
-# ====== Основной обработчик навигации ======
+# ====== Основной обработчик навигации (ОБЪЕДИНЕННЫЙ) ======
 @dp.message()
 async def handle_buttons(message: types.Message):
     user_id = message.from_user.id
     text = message.text
 
+    # --- СНАЧАЛА проверяем, не редактируем ли мы время ---
+    if user_id in users and 'edit_state' in users[user_id] and 'old_time' in users[user_id]['edit_state']:
+        old_time = users[user_id]['edit_state']['old_time']
+        new_time = message.text
+        try:
+            datetime.strptime(new_time, "%H:%M")
+            # Заменяем старое время новым
+            if old_time in users[user_id]['times']:
+                index = users[user_id]['times'].index(old_time)
+                users[user_id]['times'][index] = new_time
+                users[user_id]['taken_today'].pop(old_time, None)
+                users[user_id]['taken_today'][new_time] = False
+                # Удаляем state
+                users[user_id].pop('edit_state', None)
+                await message.answer(f"Напоминание {old_time} изменено на {new_time} ✅", reply_markup=main_keyboard)
+            else:
+                # Если старое время как-то пропало, просто выходим из режима
+                users[user_id].pop('edit_state', None)
+                await message.answer("Ошибка: не найдено старое напоминание. Редактирование отменено.", reply_markup=main_keyboard)
+        except ValueError:
+            await message.answer("Неправильный формат. Введи в HH:MM.")
+        return # Важно, чтобы выйти из функции
+
+    # --- Теперь обрабатываем кнопки и добавление времени ---
     if text == "Добавить время":
         await message.answer("Отправь время в формате HH:MM (например, 08:30).")
     elif text == "Показать напоминания":
         if user_id in users and users[user_id]["times"]:
-            times = ", ".join(users[user_id]["times"])
+            times = ", ".join(sorted(users[user_id]["times"]))
             await message.answer(f"Твои напоминания: {times}")
         else:
             await message.answer("У тебя ещё нет напоминаний.")
@@ -71,7 +95,7 @@ async def handle_buttons(message: types.Message):
         else:
             await message.answer("❌ У тебя нет прав для перезапуска бота.")
     else:
-        # Если пользователь прислал время
+        # Если пользователь прислал время (и мы НЕ в режиме редактирования)
         try:
             datetime.strptime(text, "%H:%M")
             if user_id not in users:
@@ -79,7 +103,9 @@ async def handle_buttons(message: types.Message):
             if text not in users[user_id]["times"]:
                 users[user_id]["times"].append(text)
                 users[user_id]["taken_today"][text] = False
-            await message.answer(f"Напоминание добавлено на {text}")
+                await message.answer(f"Напоминание добавлено на {text}")
+            else:
+                await message.answer(f"Время {text} уже есть в списке.")
         except ValueError:
             await message.answer("Неправильный формат. Введи в HH:MM.")
 
@@ -90,7 +116,7 @@ async def show_delete_buttons(user_id, message):
         return
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=t, callback_data=f"del_{t}")] for t in users[user_id]["times"]
+            [InlineKeyboardButton(text=t, callback_data=f"del_{t}")] for t in sorted(users[user_id]["times"])
         ]
     )
     await message.answer("Выбери время, которое хочешь удалить:", reply_markup=keyboard)
@@ -114,10 +140,10 @@ async def show_edit_buttons(user_id, message):
         return
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=t, callback_data=f"edit_{t}")] for t in users[user_id]["times"]
+            [InlineKeyboardButton(text=t, callback_data=f"edit_{t}")] for t in sorted(users[user_id]["times"])
         ]
     )
-    await message.answer("Выбери напоминание, которое хочешь изменить:", reply_markup=keyboard)
+    await message.answer("Выбери напоминание, кое хочешь изменить:", reply_markup=keyboard)
 
 @dp.callback_query(lambda c: c.data.startswith("edit_"))
 async def edit_reminder(callback: types.CallbackQuery):
@@ -131,48 +157,47 @@ async def edit_reminder(callback: types.CallbackQuery):
     users[user_id]['edit_state']['old_time'] = time_to_edit
     await callback.answer()
 
-# ====== Перехват нового времени для редактирования ======
-@dp.message()
-async def edit_time_handler(message: types.Message):
-    user_id = message.from_user.id
-    if user_id in users and 'edit_state' in users[user_id] and 'old_time' in users[user_id]['edit_state']:
-        old_time = users[user_id]['edit_state']['old_time']
-        new_time = message.text
-        try:
-            datetime.strptime(new_time, "%H:%M")
-            # Заменяем старое время новым
-            index = users[user_id]['times'].index(old_time)
-            users[user_id]['times'][index] = new_time
-            users[user_id]['taken_today'].pop(old_time, None)
-            users[user_id]['taken_today'][new_time] = False
-            # Удаляем state
-            users[user_id].pop('edit_state', None)
-            await message.answer(f"Напоминание {old_time} изменено на {new_time} ✅", reply_markup=main_keyboard)
-        except ValueError:
-            await message.answer("Неправильный формат. Введи в HH:MM.")
-        return
-
 # ====== Inline кнопка "Я выпил(-а)" ======
 @dp.callback_query(lambda c: c.data == "taken")
 async def taken_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-    msg_time = callback.message.date.strftime("%H:%M")
+    now_dt = datetime.now()
+    
     if user_id in users:
         for t in users[user_id]["times"]:
-            if not users[user_id]["taken_today"][t] and abs(datetime.strptime(t, "%H:%M") - datetime.strptime(msg_time, "%H:%M")).seconds < 60:
-                users[user_id]["taken_today"][t] = True
-                await callback.message.edit_text(f"Отлично! 💊 Ты принял(-а) витамины на {t} сегодня.")
-                await callback.answer()
-                return
-        await callback.answer("Напоминание уже отмечено.")
+            # Проверяем, что напоминание не отмечено
+            if not users[user_id]["taken_today"].get(t, False):
+                time_dt = datetime.strptime(t, "%H:%M").replace(year=now_dt.year, month=now_dt.month, day=now_dt.day)
+                # Даем 5 минут (300 секунд) погрешности на нажатие кнопки
+                if abs((now_dt - time_dt).total_seconds()) < 300: 
+                    users[user_id]["taken_today"][t] = True
+                    await callback.message.edit_text(f"Отлично! 💊 Ты принял(-а) витамины на {t} сегодня.")
+                    await callback.answer()
+                    return
+                    
+    await callback.answer("Не найдено активных напоминаний для отметки.", show_alert=True)
+
 
 # ====== Фоновая задача напоминаний ======
 async def send_reminders():
     while True:
-        now = datetime.now().strftime("%H:%M")
+        # --- ИСПРАВЛЕНИЕ: ЧАСОВОЙ ПОЯС ---
+        # Сервер Render работает в UTC (0). 
+        # Чтобы напоминания приходили по вашему времени, нужно указать смещение.
+        # Укажите ваше смещение от UTC в часах.
+        # Например, для Москвы (UTC+3) -> 3
+        # Для Екатеринбурга (UTC+5) -> 5
+        # Для Новосибирска (UTC+7) -> 7
+        TIMEZONE_OFFSET_HOURS = 3 # <--- УКАЖИТЕ ВАШ ЧАСОВОЙ ПОЯС (в часах)
+        
+        tz = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
+        now = datetime.now(tz).strftime("%H:%M")
+        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
         for user_id, data in users.items():
             for t in data["times"]:
-                if t == now and not data["taken_today"][t]:
+                # Проверяем, что ключ 't' существует в 'taken_today'
+                if t == now and not data.get("taken_today", {}).get(t, False):
                     try:
                         await bot.send_message(user_id, f"💊 Пора принять витамины ({t})!", reply_markup=button_taken)
                     except Exception as e:
@@ -226,4 +251,5 @@ if __name__ == '__main__':
     except (KeyboardInterrupt, SystemExit):
         logging.info("Бот остановлен.")
         print("Бот остановлен.")
+
 
